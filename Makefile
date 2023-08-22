@@ -39,8 +39,10 @@ endif
 #
 
 CFLAGS   = -I.              -O3 -DNDEBUG -std=c11   -fPIC
-CXXFLAGS = -I. -I./examples -O3 -DNDEBUG -std=c++11 -fPIC
+CXXFLAGS = -I. -I./examples -O3 -DNDEBUG -std=c++11 -fPIC 
 LDFLAGS  =
+
+LDFLAGS += -L/usr/local/Cellar/curl/7.84.0/lib/ -lcurl
 
 # ref: https://github.com/ggerganov/whisper.cpp/issues/37
 ifneq ($(wildcard /usr/include/musl/*),)
@@ -180,7 +182,7 @@ ifdef WHISPER_CUBLAS
 	endif
 
 	CFLAGS      += -DGGML_USE_CUBLAS -I/usr/local/cuda/include -I/opt/cuda/include -I$(CUDA_PATH)/targets/$(UNAME_M)-linux/include
-	CXXFLAGS    += -DGGML_USE_CUBLAS -I/usr/local/cuda/include -I/opt/cuda/include -I$(CUDA_PATH)/targets/$(UNAME_M)-linux/include
+	CXXFLAGS    += -DGGML_USE_CUBLAS -I/usr/local/cuda/include -I/opt/cuda/include -I$(CUDA_PATH)/targets/$(UNAME_M)-linux/include 
 	LDFLAGS     += -lcublas -lculibos -lcudart -lcublasLt -lpthread -ldl -lrt -L/usr/local/cuda/lib64 -L/opt/cuda/lib64 -L$(CUDA_PATH)/targets/$(UNAME_M)-linux/lib
 	WHISPER_OBJ += ggml-cuda.o
 	NVCC        = nvcc

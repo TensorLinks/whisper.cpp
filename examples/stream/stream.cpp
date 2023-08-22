@@ -12,7 +12,32 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <iostream>
 #include <fstream>
+#include <sys/stat.h>
+
+#include "openai.hpp"
+
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <nlohmann/json.hpp>  // for nlohmann::json
+#include <regex>
+
+// Define some ANSI escape codes for colors and styles
+#define RESET   "\033[0m"
+#define BOLD    "\033[1m"
+#define BLACK   "\033[30m"      /* Black */
+#define RED     "\033[31m"      /* Red */
+#define GREEN   "\033[32m"      /* Green */
+#define YELLOW  "\033[33m"      /* Yellow */
+#define BLUE    "\033[34m"      /* Blue */
+#define MAGENTA "\033[35m"      /* Magenta */
+#define CYAN    "\033[36m"      /* Cyan */
+#define WHITE   "\033[37m"      /* White */
+
+
 
 //  500 -> 00:05.000
 // 6000 -> 01:00.000
@@ -47,7 +72,7 @@ struct whisper_params {
     bool print_special = false;
     bool no_context    = true;
     bool no_timestamps = false;
-    bool tinydiarize   = false;
+    bool tinydiarize   = true;
 
     std::string language  = "en";
     std::string model     = "models/ggml-base.en.bin";
@@ -120,8 +145,205 @@ void whisper_print_usage(int /*argc*/, char ** argv, const whisper_params & para
     fprintf(stderr, "\n");
 }
 
+
+
+template <typename T>
+class ConcurrentQueue {
+private:
+    std::queue<T> queue_;
+    std::mutex mutex_;
+    std::condition_variable condVar_;
+
+public:
+    void push(const T& item) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.push(item);
+        condVar_.notify_one();
+    }
+
+    bool pop(T& item) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (queue_.empty()) {
+            condVar_.wait(lock);
+        }
+        item = queue_.front();
+        queue_.pop();
+        return true;
+    }
+
+    std::vector<T> pullAll() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        std::vector<T> items;
+        
+        while(!queue_.empty()) {
+            items.push_back(queue_.front());
+            queue_.pop();
+        }
+
+        return items;
+    }
+
+};
+
+
+ConcurrentQueue<std::string> trascriptQueue;
+
+std::string getAllTranscriptsAndConcatenate() {
+    std::vector<std::string> transcripts = trascriptQueue.pullAll(); // Assuming your queue is of type std::string
+    
+    std::string concatenatedTranscript;
+    for (const auto& transcript : transcripts) {
+        concatenatedTranscript += transcript;
+        concatenatedTranscript += ' '; // Add space or any other separator if needed
+    }
+
+    return concatenatedTranscript;
+}
+
+
+int countWords(const std::string& str) {
+    std::stringstream ss(str);
+    std::string word;
+    int count = 0;
+
+    while (ss >> word) {
+        count++;
+    }
+
+    return count;
+}
+
+
+void processTranscript() {
+    using namespace nlohmann;
+    std::string transcript;
+    
+           // Define the initial prompt messages using C++ 11
+    json messages = json::array({
+        {
+            {"role", "system"},
+            {"content", "You are a software engineer."}
+        },
+        {
+            {"role", "user"},
+            {"content",
+                "You are listening to a software interview as a live stream transcript.\n\n" 
+                "1. Carefully listen to the streaming transcript. If the content:\n" 
+                "  - Appears fragmented or lacks context,\n" 
+                "  - Seems incomplete,\n" 
+                "  - Is unclear in its intention,\n" 
+                "  Respond with: <listening>\n\n" 
+                "2. Do not react to or acknowledge ambient words or phrases like [music], [BLANK AUDIO], [wind].\n\n" 
+                "3. From the transcript, try to distinguish between the interviewer and the interviewee based on context.\n\n" 
+                "4. When the interviewer poses a coding challenge or task, format your response as follows where applicable:\n"
+                "  Problem: <task or challenge identified> \n"
+                "  Approach: <steps concisely>\n"
+                "  Code: <readable code with comments>\n"
+                "  run time complexity: <outline concisely and how>\n"
+                "5. Do not elaborate or explain unless specifically asked."
+            }
+        },
+        {
+            {"role", "assistant"},
+            {"content", "Understood. Started listening to the transcript."}
+        }
+    });
+    json messages_history = json::array({});
+
+    openai::start("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"); // Or you can handle it yourself
+    std::string transcript_history;
+    while (true) {
+        transcript = getAllTranscriptsAndConcatenate();
+        if (!transcript.empty()) {
+            // Your processing code here...
+            // For example: auto chat = openai::chat().create(chatRequest);
+
+                                // Append the new message to the existing messages
+                                  // Suppose this is the new transcript message
+                    json newMessage = {
+                        {"role", "user"},
+                        {"content", transcript }
+                    };
+                    messages_history.push_back(newMessage);
+
+                    json request_messages = json::array({});
+
+                 // Impose max limit on messages_history
+
+                    // Append messages to messages_history
+                    for (const auto& message : messages) {
+                        request_messages.push_back(message);
+                    }
+
+                    const size_t N = 30; // set your desired maximum number of messages
+                    if (messages_history.size() > N) {
+                        messages_history.erase(messages_history.begin(), messages_history.begin() + (messages_history.size() - N));
+                    }
+
+                    for (const auto& message : messages_history) {
+                        request_messages.push_back(message);
+                    }
+                
+
+                     // Construct the chat creation request
+                    json chatRequest = {
+                        {"model", "gpt-3.5-turbo"},
+                        {"messages", request_messages},
+                       //  {"temperature", 0}
+                    };
+
+                    // Convert the chatRequest to string and check the token count
+                    std::string chatRequestStr = chatRequest.dump();
+
+
+                    try {
+                        auto chat = openai::chat().create(chatRequest);
+
+                        // Checking if the expected keys are present in the returned JSON
+                        if (chat.find("choices") != chat.end() && 
+                            chat["choices"].is_array() && 
+                            !chat["choices"].empty() && 
+                            chat["choices"][0].find("message") != chat["choices"][0].end() && 
+                            chat["choices"][0]["message"].find("content") != chat["choices"][0]["message"].end()) {
+                            
+                            std::string reply = chat["choices"][0]["message"]["content"];
+                             json replyMessage = {
+                                {"role", "assistant"},
+                                {"content", reply }
+                            };
+                            messages_history.push_back(replyMessage);
+                            // std::cout << "Response is:\n" << reply << '\n';
+                            std::cout << BOLD << RED << reply << RESET << "\n";
+                        } else {
+                            std::cerr << "Error: Unexpected JSON structure received!" << '\n';
+                        }
+                    } catch (const nlohmann::json::exception& e) {
+                        std::cerr << "JSON exception occurred: " << e.what() << '\n';
+                    } catch (const std::exception& e) {
+                        std::cerr << "Exception occurred: " << e.what() << '\n';
+                    } catch (...) {
+                        std::cerr << "Unknown exception occurred!" << '\n';
+                    }
+
+        }
+    }
+}
+
+
 int main(int argc, char ** argv) {
+   
     whisper_params params;
+
+     // Start the consumer thread
+    std::thread transcriptThread(processTranscript);
+
+    /*
+    const char* fifoPath = "/tmp/transcriptionPipe";
+    mkfifo(fifoPath, 0666); // Create the named pipe
+
+    std::ofstream pipeOut;
+    pipeOut.open(fifoPath);
+    */
 
     if (whisper_params_parse(argc, argv, params) == false) {
         return 1;
@@ -136,6 +358,7 @@ int main(int argc, char ** argv) {
     const int n_samples_30s  = (1e-3*30000.0         )*WHISPER_SAMPLE_RATE;
 
     const bool use_vad = n_samples_step <= 0; // sliding window mode uses VAD
+    printf("use_vad = %d\n", use_vad);
 
     const int n_new_line = !use_vad ? std::max(1, params.length_ms / params.step_ms - 1) : 1; // number of steps to print new line
 
@@ -365,6 +588,10 @@ int main(int argc, char ** argv) {
                             fout << output;
                         }
                     }
+
+                    std::string trascript = text;
+                    trascriptQueue.push(trascript);
+                    
                 }
 
                 if (params.fname_out.length() > 0) {
@@ -406,6 +633,8 @@ int main(int argc, char ** argv) {
 
     whisper_print_timings(ctx);
     whisper_free(ctx);
+
+    // pipeOut.close();
 
     return 0;
 }

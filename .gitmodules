@@ -1,3 +1,9 @@
 [submodule "bindings/ios"]
 	path = bindings/ios
 	url = https://github.com/ggerganov/whisper.spm
+[submodule "examples/stream/curl"]
+	path = examples/stream/curl
+	url = https://github.com/curl/curl.git
+[submodule "examples/stream/openai-cpp"]
+	path = examples/stream/openai-cpp
+	url = https://github.com/olrea/openai-cpp.git
